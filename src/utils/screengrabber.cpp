@@ -11,6 +11,8 @@
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QImageReader>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QMouseEvent>
@@ -18,6 +20,7 @@
 #include <QPixmap>
 #include <QProcess>
 #include <QScreen>
+#include <QStandardPaths>
 #include <QTimer>
 #include <QWidget>
 #include <algorithm>
@@ -32,6 +35,7 @@
 #include <QDBusMessage>
 #include <QDBusReply>
 #include <QDir>
+#include <QFileInfo>
 #include <QUrl>
 #include <QUuid>
 #endif
@@ -191,6 +195,16 @@ QPixmap ScreenGrabber::unixScreenshot(bool& ok)
 #if defined(Q_OS_UNIX) && !defined(Q_OS_MACOS)
     QPixmap screenshot;
 
+    if (m_info.niriDetected()) {
+        QString error;
+        screenshot = niriScreenshot(error);
+        ok = !screenshot.isNull();
+        if (!ok) {
+            AbstractLogger::error() << error;
+        }
+        return screenshot;
+    }
+
     if (!m_info.waylandDetected() && ConfigHandler().useX11LegacyScreenshot()) {
         screenshot = x11LegacyScreenshot();
         ok = !screenshot.isNull();
@@ -228,6 +242,118 @@ QPixmap ScreenGrabber::unixScreenshot(bool& ok)
 #endif
 }
 
+QPixmap ScreenGrabber::niriScreenshot(QString& errorDetail)
+{
+#if defined(Q_OS_UNIX) && !defined(Q_OS_MACOS)
+    m_niriScreens.clear();
+    QString grim = QStandardPaths::findExecutable(QStringLiteral("grim"));
+    // D-Bus activated applications may receive a restricted PATH that does
+    // not include the user's local bin directory, even though grim works in
+    // an interactive shell.
+    if (grim.isEmpty()) {
+        const QString localGrim = QDir::homePath() + QStringLiteral("/.local/bin/grim");
+        if (QFileInfo(localGrim).isExecutable()) {
+            grim = localGrim;
+        }
+    }
+    if (grim.isEmpty()) {
+        errorDetail = tr("niri screenshot capture requires grim to be installed");
+        return {};
+    }
+    const QList<QScreen*> screens = QGuiApplication::screens();
+    if (screens.isEmpty()) {
+        errorDetail = tr("No screens are available for capture");
+        return {};
+    }
+
+    QRect desktop;
+    qreal scale = 1.0;
+    for (QScreen* screen : screens) {
+        desktop = desktop.united(screen->geometry());
+        scale = qMax(scale, screen->devicePixelRatio());
+    }
+
+    QImage image(qRound(desktop.width() * scale),
+                 qRound(desktop.height() * scale),
+                 QImage::Format_ARGB32_Premultiplied);
+    if (image.isNull()) {
+        errorDetail = tr("Unable to allocate the desktop screenshot");
+        return {};
+    }
+    image.fill(Qt::transparent);
+    QPainter painter(&image);
+
+    for (QScreen* screen : screens) {
+        QProcess process;
+        process.start(grim, { QStringLiteral("-o"), screen->name(),
+                              QStringLiteral("-") });
+        if (!process.waitForStarted() || !process.waitForFinished(15000) ||
+            process.exitStatus() != QProcess::NormalExit ||
+            process.exitCode() != 0) {
+            process.kill();
+            process.waitForFinished();
+            errorDetail = tr("grim could not capture output %1: %2")
+                            .arg(screen->name(),
+                                 QString::fromLocal8Bit(process.readAllStandardError()));
+            return {};
+        }
+
+        QPixmap output;
+        if (!output.loadFromData(process.readAllStandardOutput(), "PNG")) {
+            errorDetail = tr("grim returned an invalid image for output %1")
+                            .arg(screen->name());
+            return {};
+        }
+        // Qt and niri can round fractional output scales differently. Use the
+        // actual image width so a single-output capture stays pixel-perfect.
+        output.setDevicePixelRatio(
+          qreal(output.width()) / screen->geometry().width());
+        m_niriScreens.insert(screen->name(), output);
+
+        const QRect geometry = screen->geometry().translated(-desktop.topLeft());
+        painter.drawPixmap(QRect(qRound(geometry.x() * scale),
+                                 qRound(geometry.y() * scale),
+                                 qRound(geometry.width() * scale),
+                                 qRound(geometry.height() * scale)),
+                           output);
+    }
+    painter.end();
+    QPixmap result = QPixmap::fromImage(image);
+    result.setDevicePixelRatio(scale);
+    return result;
+#else
+    Q_UNUSED(errorDetail)
+    return {};
+#endif
+}
+
+int ScreenGrabber::niriFocusedMonitor() const
+{
+#if defined(Q_OS_UNIX) && !defined(Q_OS_MACOS)
+    QProcess process;
+    process.start(QStringLiteral("niri"),
+                  { QStringLiteral("msg"), QStringLiteral("-j"),
+                    QStringLiteral("focused-output") });
+    if (!process.waitForStarted() || !process.waitForFinished(3000) ||
+        process.exitCode() != 0) {
+        if (process.state() != QProcess::NotRunning) {
+            process.kill();
+            process.waitForFinished();
+        }
+        return -1;
+    }
+    const auto document = QJsonDocument::fromJson(process.readAllStandardOutput());
+    const QString name = document.object().value(QStringLiteral("name")).toString();
+    const QList<QScreen*> screens = QGuiApplication::screens();
+    for (int i = 0; i < screens.size(); ++i) {
+        if (screens[i]->name() == name) {
+            return i;
+        }
+    }
+#endif
+    return -1;
+}
+
 QPixmap ScreenGrabber::selectMonitorAndCrop(const QPixmap& fullScreenshot,
                                             bool& ok)
 {
@@ -244,9 +370,23 @@ QPixmap ScreenGrabber::selectMonitorAndCrop(const QPixmap& fullScreenshot,
         return cropToMonitor(fullScreenshot, 0);
     }
 
+    if (m_info.niriDetected() && !ConfigHandler().captureActiveMonitor()) {
+        const int focused = niriFocusedMonitor();
+        if (focused >= 0) {
+            m_selectedMonitor = focused;
+            return cropToMonitor(fullScreenshot, focused);
+        }
+    }
+
     // Capture Active Monitor: auto-select monitor under cursor
     if (ConfigHandler().captureActiveMonitor()) {
-        if (m_info.waylandDetected()) {
+        if (m_info.niriDetected()) {
+            const int focused = niriFocusedMonitor();
+            if (focused >= 0) {
+                m_selectedMonitor = focused;
+                return cropToMonitor(fullScreenshot, focused);
+            }
+        } else if (m_info.waylandDetected()) {
             AbstractLogger::error()
               << tr("Capture Active Monitor is not supported on Wayland due to "
                     "Wayland security model.");
@@ -437,6 +577,15 @@ QScreen* ScreenGrabber::getSelectedScreen() const
     return screens[m_selectedMonitor];
 }
 
+QPixmap ScreenGrabber::capturedMonitor(int monitorIndex) const
+{
+    const QList<QScreen*> screens = QGuiApplication::screens();
+    if (monitorIndex < 0 || monitorIndex >= screens.size()) {
+        return {};
+    }
+    return m_niriScreens.value(screens[monitorIndex]->name());
+}
+
 QWidget* ScreenGrabber::createMonitorPreviews(const QPixmap& fullScreenshot)
 {
     const QList<QScreen*> screens = QGuiApplication::screens();
@@ -468,6 +617,9 @@ QWidget* ScreenGrabber::createMonitorPreviews(const QPixmap& fullScreenshot)
     QHBoxLayout* containerLayout = new QHBoxLayout(monitorPreviews);
     containerLayout->setSpacing(20);
     containerLayout->setContentsMargins(20, 20, 20, 20);
+    if (m_info.niriDetected()) {
+        containerLayout->addStretch();
+    }
 
     // Build list of screen indices sorted by X position (left to right)
     QList<int> sortedIndices;
@@ -502,6 +654,12 @@ QWidget* ScreenGrabber::createMonitorPreviews(const QPixmap& fullScreenshot)
     int initialPreviewIndex = 0;
     QScreen* currentScreen = QGuiAppCurrentScreen().currentScreen();
     int currentMonitorIndex = screens.indexOf(currentScreen);
+    if (m_info.niriDetected()) {
+        const int focused = niriFocusedMonitor();
+        if (focused >= 0) {
+            currentMonitorIndex = focused;
+        }
+    }
     int currentPreviewIndex = previewIndexForMonitor(currentMonitorIndex);
     if (currentPreviewIndex >= 0) {
         initialPreviewIndex = currentPreviewIndex;
@@ -511,13 +669,17 @@ QWidget* ScreenGrabber::createMonitorPreviews(const QPixmap& fullScreenshot)
     monitorPreviews->setLayout(containerLayout);
     monitorPreviews->adjustSize();
 
-    QScreen* primaryScreen = QGuiApplication::primaryScreen();
-    QRect screenGeometry = primaryScreen->geometry();
-    QPoint center = screenGeometry.center();
-    monitorPreviews->move(center.x() - monitorPreviews->width() / 2,
-                          center.y() - monitorPreviews->height() / 2);
-
-    monitorPreviews->show();
+    if (m_info.niriDetected()) {
+        containerLayout->addStretch();
+        monitorPreviews->showFullScreen();
+    } else {
+        QScreen* primaryScreen = QGuiApplication::primaryScreen();
+        QRect screenGeometry = primaryScreen->geometry();
+        QPoint center = screenGeometry.center();
+        monitorPreviews->move(center.x() - monitorPreviews->width() / 2,
+                              center.y() - monitorPreviews->height() / 2);
+        monitorPreviews->show();
+    }
     monitorPreviews->raise();
     monitorPreviews->activateWindow();
     monitorPreviews->setFocus(Qt::ActiveWindowFocusReason);
@@ -643,8 +805,13 @@ QPixmap ScreenGrabber::cropToMonitor(const QPixmap& fullScreenshot,
                                      int monitorIndex)
 {
     const QList<QScreen*> screens = QGuiApplication::screens();
-    if (monitorIndex >= screens.size()) {
+    if (monitorIndex < 0 || monitorIndex >= screens.size()) {
         return fullScreenshot;
+    }
+
+    if (m_info.niriDetected() &&
+        m_niriScreens.contains(screens[monitorIndex]->name())) {
+        return m_niriScreens.value(screens[monitorIndex]->name());
     }
 
     QScreen* targetScreen = screens[monitorIndex];

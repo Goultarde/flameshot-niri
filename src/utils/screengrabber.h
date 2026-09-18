@@ -7,6 +7,7 @@
 
 #include <QEvent>
 #include <QList>
+#include <QHash>
 #include <QObject>
 #include <QPixmap>
 #include <QScreen>
@@ -35,6 +36,7 @@ public:
     QRect logicalDesktopGeometry();
     int getSelectedMonitor() const { return m_selectedMonitor; }
     QScreen* getSelectedScreen() const;
+    QPixmap capturedMonitor(int monitorIndex) const;
     QPixmap selectMonitorAndCrop(const QPixmap& fullScreenshot, bool& ok);
 
 protected:
@@ -53,8 +55,11 @@ private:
     QPixmap windowsScreenshot(int wid);
     QPixmap x11LegacyScreenshot();
     QPixmap unixScreenshot(bool& ok);
+    QPixmap niriScreenshot(QString& errorDetail);
+    int niriFocusedMonitor() const;
 
     DesktopInfo m_info;
+    QHash<QString, QPixmap> m_niriScreens;
     QPixmap Screenshot;
     int m_selectedMonitor;
     int m_highlightedMonitorPreview;

@@ -64,6 +64,7 @@
             qt6.qtsvg
             qt6.qtwayland
             kdePackages.kguiaddons
+            kdePackages.layer-shell-qt
           ];
 
           flameshot = pkgs.stdenv.mkDerivation {

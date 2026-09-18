@@ -22,6 +22,7 @@ public:
     };
 
     bool waylandDetected();
+    bool niriDetected() const;
     WM windowManager();
 
 private:

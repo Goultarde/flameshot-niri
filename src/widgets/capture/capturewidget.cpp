@@ -54,7 +54,8 @@ auto const MOUSE_WHEEL_TRESHOLD = 60;
 
 CaptureWidget::CaptureWidget(const CaptureRequest& req,
                              bool fullScreen,
-                             QWidget* parent)
+                             QWidget* parent,
+                             const QPixmap& preparedScreenshot)
   : QWidget(parent)
   , m_toolSizeByKeyboard(0)
   , m_mouseIsClicked(false)
@@ -121,15 +122,20 @@ CaptureWidget::CaptureWidget(const CaptureRequest& req,
         } else {
             preSelectedMonitor = -1;
         }
-        m_context.screenshot =
-          grabber.grabEntireDesktop(ok, preSelectedMonitor);
+        if (!preparedScreenshot.isNull() && preSelectedMonitor >= 0 &&
+            preSelectedMonitor < QGuiApplication::screens().size()) {
+            m_context.screenshot = preparedScreenshot;
+            selectedScreen = QGuiApplication::screens()[preSelectedMonitor];
+        } else {
+            m_context.screenshot =
+              grabber.grabEntireDesktop(ok, preSelectedMonitor);
+            selectedScreen = grabber.getSelectedScreen();
+        }
         if (!ok) {
             // Error already logged in ScreenGrabber
             this->close();
         }
         m_context.origScreenshot = m_context.screenshot;
-
-        selectedScreen = grabber.getSelectedScreen();
 
 #if defined(Q_OS_WIN)
 #if !defined(FLAMESHOT_DEBUG_CAPTURE)
@@ -326,9 +332,15 @@ CaptureWidget::~CaptureWidget()
         geometry.setTopLeft(geometry.topLeft() + m_context.widgetOffset);
         Flameshot::instance()->exportCapture(
           pixmap(), geometry, m_context.request);
-    } else {
+    } else if (!m_closeWithoutFailure) {
         emit Flameshot::instance()->captureFailed();
     }
+}
+
+void CaptureWidget::closeWithoutFailure()
+{
+    m_closeWithoutFailure = true;
+    close();
 }
 
 void CaptureWidget::initButtons()
@@ -1352,7 +1364,7 @@ void CaptureWidget::initSelection()
         m_buttonHandler->hide();
         updateCursor();
         updateSizeIndicator();
-        OverlayMessage::pop();
+        OverlayMessage::dismissAll();
     });
     connect(m_selection, &SelectionWidget::geometrySettled, this, [this]() {
         if (m_selection->isVisibleTo(this)) {

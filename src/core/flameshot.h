@@ -7,6 +7,7 @@
 #include "widgets/capture/capturewidget.h"
 
 #include <QObject>
+#include <QList>
 #include <QPointer>
 #include <QVersionNumber>
 #include <QWindow>
@@ -89,6 +90,8 @@ private:
     bool m_haveExternalWidget;
 
     QPointer<CaptureWidget> m_captureWindow;
+    QList<QPointer<CaptureWidget>> m_niriCaptureWindows;
+    bool m_closingNiriCaptureWindows = false;
     QPointer<InfoWindow> m_infoWindow;
     QPointer<CaptureLauncher> m_launcherWindow;
     QPointer<ConfigWindow> m_configWindow;

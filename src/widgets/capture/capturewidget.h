@@ -49,7 +49,9 @@ class CaptureWidget : public QWidget
 public:
     explicit CaptureWidget(const CaptureRequest& req,
                            bool fullScreen = true,
-                           QWidget* parent = nullptr);
+                           QWidget* parent = nullptr,
+                           const QPixmap& preparedScreenshot = QPixmap());
+    void closeWithoutFailure();
     ~CaptureWidget();
 
     QPixmap pixmap();
@@ -178,6 +180,7 @@ private:
     bool m_newSelection;
     bool m_movingSelection;
     bool m_captureDone;
+    bool m_closeWithoutFailure = false;
     bool m_previewEnabled;
     bool m_adjustmentButtonPressed;
     bool m_configError;

@@ -24,6 +24,17 @@ bool DesktopInfo::waylandDetected()
                                     Qt::CaseInsensitive);
 }
 
+bool DesktopInfo::niriDetected() const
+{
+    for (const QString& desktop : XDG_CURRENT_DESKTOP.split(QChar(':'))) {
+        if (desktop.compare(QLatin1String("niri"), Qt::CaseInsensitive) == 0) {
+            return XDG_SESSION_TYPE == QLatin1String("wayland") ||
+                   !WAYLAND_DISPLAY.isEmpty();
+        }
+    }
+    return false;
+}
+
 DesktopInfo::WM DesktopInfo::windowManager()
 {
     DesktopInfo::WM res = DesktopInfo::OTHER;

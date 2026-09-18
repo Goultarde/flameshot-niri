@@ -61,6 +61,15 @@ void OverlayMessage::pop()
     setVisibility(m_instance->m_messageStack.size() > 1);
 }
 
+void OverlayMessage::dismissAll()
+{
+    for (QWidget* widget : QApplication::allWidgets()) {
+        if (auto* message = dynamic_cast<OverlayMessage*>(widget)) {
+            message->hide();
+        }
+    }
+}
+
 void OverlayMessage::setVisibility(bool visible)
 {
     m_instance->updateGeometry();

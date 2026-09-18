@@ -19,6 +19,10 @@ find_package(
 )
 endif()
 
+if (UNIX AND NOT APPLE)
+    find_package(LayerShellQt QUIET)
+endif()
+
 if (USE_WAYLAND_CLIPBOARD)
     find_package(KF6GuiAddons)
 endif()
@@ -194,6 +198,11 @@ target_link_libraries(
         flameshot
         Qt${QT_VERSION_MAJOR}::DBus
 )
+endif()
+
+if (LayerShellQt_FOUND)
+    target_link_libraries(flameshot LayerShellQt::Interface)
+    target_compile_definitions(flameshot PRIVATE HAVE_LAYER_SHELL_QT=1)
 endif()
 
 if (USE_KDSINGLEAPPLICATION)

@@ -4,16 +4,25 @@
 #include "pinwidget.h"
 #include "core/qguiappcurrentscreen.h"
 #include "utils/confighandler.h"
+#include "utils/desktopinfo.h"
 #include "utils/globalvalues.h"
 #include "utils/screenshotsaver.h"
 
+#include <QCoreApplication>
+#include <QGuiApplication>
 #include <QGraphicsDropShadowEffect>
 #include <QGraphicsOpacityEffect>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QMenu>
 #include <QPinchGesture>
+#include <QProcess>
 #include <QScreen>
+#include <QShowEvent>
 #include <QShortcut>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QWheelEvent>
 #include <QWindow>
@@ -60,7 +69,10 @@ PinWidget::PinWidget(const QPixmap& pixmap,
     new QShortcut(Qt::Key_Escape, this, SLOT(close()));
 
     qreal devicePixelRatio = 1;
-    QScreen* currentScreen = QGuiAppCurrentScreen().currentScreen();
+    QScreen* currentScreen = QGuiApplication::screenAt(geometry.center());
+    if (!currentScreen) {
+        currentScreen = QGuiAppCurrentScreen().currentScreen();
+    }
     if (currentScreen != nullptr) {
         devicePixelRatio = currentScreen->devicePixelRatio();
     }
@@ -81,6 +93,10 @@ PinWidget::PinWidget(const QPixmap& pixmap,
         adjusted_pos.setHeight(adjusted_pos.size().height() / devicePixelRatio);
         resize(0, 0);
         move(adjusted_pos.x(), adjusted_pos.y());
+        if (DesktopInfo().niriDetected()) {
+            winId();
+            windowHandle()->setScreen(currentScreen);
+        }
     }
 
     grabGesture(Qt::PinchGesture);
@@ -91,6 +107,52 @@ PinWidget::PinWidget(const QPixmap& pixmap,
             &QWidget::customContextMenuRequested,
             this,
             &PinWidget::showContextMenu);
+}
+
+void PinWidget::showEvent(QShowEvent* event)
+{
+    QWidget::showEvent(event);
+    if (!DesktopInfo().niriDetected()) {
+        return;
+    }
+
+    // niri tiles xdg_toplevel windows by default, including Qt::Dialog. Move
+    // this pin to the floating layout once its Wayland window is registered.
+    QTimer::singleShot(150, this, [this]() {
+        QProcess query;
+        query.start(QStringLiteral("niri"),
+                    { QStringLiteral("msg"), QStringLiteral("-j"),
+                      QStringLiteral("windows") });
+        if (!query.waitForStarted() || !query.waitForFinished(3000) ||
+            query.exitCode() != 0) {
+            if (query.state() != QProcess::NotRunning) {
+                query.kill();
+                query.waitForFinished();
+            }
+            return;
+        }
+
+        const auto windows =
+          QJsonDocument::fromJson(query.readAllStandardOutput()).array();
+        qint64 id = -1;
+        for (const auto& value : windows) {
+            const auto window = value.toObject();
+            if (window.value(QStringLiteral("pid")).toInteger() ==
+                  QCoreApplication::applicationPid() &&
+                window.value(QStringLiteral("title")).toString() ==
+                  windowTitle() &&
+                !window.value(QStringLiteral("is_floating")).toBool()) {
+                id = qMax(id, window.value(QStringLiteral("id")).toInteger());
+            }
+        }
+        if (id >= 0) {
+            QProcess::startDetached(
+              QStringLiteral("niri"),
+              { QStringLiteral("msg"), QStringLiteral("action"),
+                QStringLiteral("move-window-to-floating"),
+                QStringLiteral("--id"), QString::number(id) });
+        }
+    });
 }
 
 void PinWidget::closePin()

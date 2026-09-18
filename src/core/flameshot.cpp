@@ -48,6 +48,7 @@ constexpr const char* visibleInDockProperty = "_visibleInDock";
 #include "core/qguiappcurrentscreen.h"
 #include "utils/abstractlogger.h"
 #include "utils/confighandler.h"
+#include "utils/desktopinfo.h"
 #include "utils/screengrabber.h"
 #include "utils/screenshotsaver.h"
 #include "widgets/capture/capturewidget.h"
@@ -71,6 +72,10 @@ constexpr const char* visibleInDockProperty = "_visibleInDock";
 #include <QTimer>
 #include <QUrl>
 #include <QVersionNumber>
+
+#if defined(HAVE_LAYER_SHELL_QT)
+#include <LayerShellQt/Window>
+#endif
 
 #if defined(Q_OS_MACOS)
 #include <QScreen>
@@ -145,7 +150,7 @@ CaptureWidget* Flameshot::gui(const CaptureRequest& req)
     }
 #endif
 
-    if (nullptr == m_captureWindow) {
+    if (nullptr == m_captureWindow && m_niriCaptureWindows.isEmpty()) {
         // TODO is this unnecessary now?
         int timeout = 5000; // 5 seconds
         const int delay = 100;
@@ -163,6 +168,76 @@ CaptureWidget* Flameshot::gui(const CaptureRequest& req)
             QMessageBox::warning(
               nullptr, tr("Error"), tr("Unable to close active modal widgets"));
             return nullptr;
+        }
+
+        if (DesktopInfo().niriDetected() &&
+            request.captureMode() == CaptureRequest::GRAPHICAL_MODE &&
+            !request.hasSelectedMonitor() &&
+            request.initialSelection().isNull() &&
+            !ConfigHandler().captureActiveMonitor() &&
+            qApp->screens().size() > 1) {
+            ScreenGrabber grabber;
+            bool ok = false;
+            grabber.grabFullDesktop(ok);
+            if (!ok) {
+                emit captureFailed();
+                return nullptr;
+            }
+
+            const QList<QScreen*> screens = qApp->screens();
+            for (int i = 0; i < screens.size(); ++i) {
+                QPixmap image = grabber.capturedMonitor(i);
+                if (image.isNull()) {
+                    emit captureFailed();
+                    return nullptr;
+                }
+                CaptureRequest monitorRequest = request;
+                monitorRequest.setSelectedMonitor(i);
+                auto* widget =
+                  new CaptureWidget(monitorRequest, true, nullptr, image);
+                m_niriCaptureWindows.append(widget);
+                connect(widget, &QObject::destroyed, this, [this]() {
+                    if (m_closingNiriCaptureWindows) {
+                        return;
+                    }
+                    m_closingNiriCaptureWindows = true;
+                    for (const auto& window : m_niriCaptureWindows) {
+                        if (window) {
+                            window->closeWithoutFailure();
+                        }
+                    }
+                    m_niriCaptureWindows.clear();
+                    m_captureWindow = nullptr;
+                    m_closingNiriCaptureWindows = false;
+                });
+            }
+            m_captureWindow = m_niriCaptureWindows.first();
+            for (int i = 0; i < m_niriCaptureWindows.size(); ++i) {
+                auto* widget = m_niriCaptureWindows[i].data();
+                widget->winId();
+                widget->windowHandle()->setScreen(screens[i]);
+#if defined(HAVE_LAYER_SHELL_QT)
+                if (auto* layer = LayerShellQt::Window::get(
+                      widget->windowHandle())) {
+                    layer->setScope(QStringLiteral("flameshot-capture"));
+                    layer->setScreen(screens[i]);
+                    layer->setLayer(LayerShellQt::Window::LayerOverlay);
+                    layer->setAnchors(LayerShellQt::Window::Anchors(
+                                        LayerShellQt::Window::AnchorTop) |
+                                      LayerShellQt::Window::AnchorBottom |
+                                      LayerShellQt::Window::AnchorLeft |
+                                      LayerShellQt::Window::AnchorRight);
+                    layer->setDesiredSize(QSize(0, 0));
+                    layer->setExclusiveZone(-1);
+                    layer->setKeyboardInteractivity(
+                      LayerShellQt::Window::KeyboardInteractivityOnDemand);
+                    widget->show();
+                    continue;
+                }
+#endif
+                widget->showFullScreen();
+            }
+            return m_captureWindow;
         }
 
         m_captureWindow = new CaptureWidget(request);

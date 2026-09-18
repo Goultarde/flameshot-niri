@@ -25,6 +25,10 @@ public:
     static void init(QWidget* parent, const QRect& targetArea);
     static void push(const QString& msg);
     static void pop();
+    // Hide help overlays from all capture surfaces. A multi-monitor capture
+    // can have one overlay per screen, while the legacy API has one active
+    // singleton pointer.
+    static void dismissAll();
     static void setVisibility(bool visible);
     static OverlayMessage* instance();
 
