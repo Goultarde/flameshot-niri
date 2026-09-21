@@ -229,8 +229,10 @@ CaptureWidget* Flameshot::gui(const CaptureRequest& req)
                                       LayerShellQt::Window::AnchorRight);
                     layer->setDesiredSize(QSize(0, 0));
                     layer->setExclusiveZone(-1);
+                    // Capture must receive Escape and the other shortcuts
+                    // immediately, before the user clicks on an output.
                     layer->setKeyboardInteractivity(
-                      LayerShellQt::Window::KeyboardInteractivityOnDemand);
+                      LayerShellQt::Window::KeyboardInteractivityExclusive);
                     widget->show();
                     continue;
                 }
